@@ -1,201 +1,240 @@
-import random
-from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Optional
+#include <algorithm>
+#include <cctype>
+#include <iostream>
+#include <random>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
-DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-SHIFTS = ["M", "A", "E"]  # Morning, Afternoon, Evening
+static const std::vector<std::string> DAYS = {"Mon","Tue","Wed","Thu","Fri","Sat","Sun"};
+static const std::vector<std::string> SHIFTS = {"M","A","E"}; // Morning, Afternoon, Evening
 
-SHIFT_NAME = {"M": "Morning", "A": "Afternoon", "E": "Evening"}
+static std::string shiftName(const std::string& s) {
+    if (s == "M") return "Morning";
+    if (s == "A") return "Afternoon";
+    return "Evening";
+}
 
+static std::string upperTrim(std::string x) {
+    // trim
+    auto notSpace = [](unsigned char ch){ return !std::isspace(ch); };
+    x.erase(x.begin(), std::find_if(x.begin(), x.end(), notSpace));
+    x.erase(std::find_if(x.rbegin(), x.rend(), notSpace).base(), x.end());
+    // upper
+    for (char& c : x) c = (char)std::toupper((unsigned char)c);
+    return x;
+}
 
-@dataclass
-class Employee:
-    name: str
-    # prefs[day] = ranked list like ["M","E","A"]
-    prefs: Dict[str, List[str]]
-    days_worked: int = 0
-    assigned_by_day: Dict[str, Optional[str]] = field(default_factory=dict)  # day -> shift or None
+static std::vector<std::string> splitPrefs(const std::string& line) {
+    std::vector<std::string> parts;
+    std::string cur;
+    for (char c : line) {
+        if (c == ',') {
+            parts.push_back(upperTrim(cur));
+            cur.clear();
+        } else cur.push_back(c);
+    }
+    parts.push_back(upperTrim(cur));
+    // filter valid shifts
+    std::vector<std::string> ranked;
+    for (auto &p : parts) {
+        if (p == "M" || p == "A" || p == "E") ranked.push_back(p);
+    }
+    // If only one valid shift given, add other shifts as fallback
+    if (ranked.size() == 1) {
+        for (auto &s : SHIFTS) {
+            if (s != ranked[0]) ranked.push_back(s);
+        }
+    }
+    if (ranked.empty()) ranked = SHIFTS;
 
+    // remove duplicates preserve order
+    std::vector<std::string> out;
+    std::unordered_map<std::string, bool> seen;
+    for (auto &s : ranked) {
+        if (!seen[s]) {
+            seen[s] = true;
+            out.push_back(s);
+        }
+    }
+    return out;
+}
 
-def parse_pref_line(line: str) -> List[str]:
-    """
-    Input examples:
-      M
-      M,E,A
-      A,M
-    Returns cleaned ranked list subset of SHIFTS. If empty, returns default ["M","A","E"].
-    """
-    parts = [p.strip().upper() for p in line.split(",") if p.strip()]
-    ranked = [p for p in parts if p in SHIFTS]
-    # If user gave only 1 valid shift, keep it as first pref but allow others as fallback:
-    if len(ranked) == 1:
-        for s in SHIFTS:
-            if s not in ranked:
-                ranked.append(s)
-    if not ranked:
-        ranked = SHIFTS[:]  # default
-    # remove duplicates while preserving order
-    seen = set()
-    out = []
-    for s in ranked:
-        if s not in seen:
-            seen.add(s)
-            out.append(s)
-    return out
+struct Employee {
+    std::string name;
+    std::unordered_map<std::string, std::vector<std::string>> prefs; // day -> ranked shifts
+    int days_worked = 0;
+    std::unordered_map<std::string, std::string> assignedByDay; // day -> shift or "" if none
+};
 
+static bool canWorkMore(const Employee& e) { return e.days_worked < 5; }
+static bool isFree(const Employee& e, const std::string& day) {
+    auto it = e.assignedByDay.find(day);
+    return it == e.assignedByDay.end() || it->second.empty();
+}
 
-def collect_input() -> List[Employee]:
-    employees: List[Employee] = []
-    n = int(input("Number of employees: ").strip())
-    for i in range(n):
-        name = input(f"Employee {i+1} name: ").strip()
-        prefs: Dict[str, List[str]] = {}
-        print("Enter preferences for each day as ranked shifts (comma-separated). Example: M,E,A")
-        for d in DAYS:
-            line = input(f"  {d}: ").strip()
-            prefs[d] = parse_pref_line(line)
-        emp = Employee(name=name, prefs=prefs)
-        emp.assigned_by_day = {d: None for d in DAYS}
-        employees.append(emp)
-    return employees
+// schedule[day][shift] = vector of employee names
+using Schedule = std::unordered_map<std::string, std::unordered_map<std::string, std::vector<std::string>>>;
 
+static bool tryAssign(
+    Schedule& schedule,
+    Employee& emp,
+    int startDayIdx,
+    bool preferredOnlyUntilFull
+) {
+    if (!canWorkMore(emp)) return false;
 
-def is_employee_free(emp: Employee, day: str) -> bool:
-    return emp.assigned_by_day.get(day) is None
+    for (int di = startDayIdx; di < (int)DAYS.size(); ++di) {
+        const std::string& day = DAYS[di];
+        if (!isFree(emp, day)) continue;
 
+        auto pit = emp.prefs.find(day);
+        std::vector<std::string> ranked = (pit != emp.prefs.end()) ? pit->second : SHIFTS;
 
-def can_work_more(emp: Employee) -> bool:
-    return emp.days_worked < 5
+        // 1) ranked
+        for (auto &s : ranked) {
+            if (preferredOnlyUntilFull && schedule[day][s].size() >= 2) continue;
+            schedule[day][s].push_back(emp.name);
+            emp.assignedByDay[day] = s;
+            emp.days_worked++;
+            return true;
+        }
 
+        // 2) any shift
+        for (auto &s : SHIFTS) {
+            if (preferredOnlyUntilFull && schedule[day][s].size() >= 2) continue;
+            schedule[day][s].push_back(emp.name);
+            emp.assignedByDay[day] = s;
+            emp.days_worked++;
+            return true;
+        }
 
-def try_assign(
-    schedule: Dict[str, Dict[str, List[str]]],
-    emp: Employee,
-    day_idx: int,
-    preferred_only_until_full: bool = True
-) -> bool:
-    """
-    Try to assign employee starting at day_idx.
-    Conflict resolution:
-      - Try ranked shifts on same day (only if shift not "full" (2) while preference pass)
-      - Else try any shift same day
-      - Else try next day (recursive/iterative)
-    Returns True if assigned somewhere.
-    """
-    if not can_work_more(emp):
-        return False
+        // 3) else next day (continue)
+    }
+    return false;
+}
 
-    for di in range(day_idx, len(DAYS)):
-        day = DAYS[di]
-        if not is_employee_free(emp, day):
-            continue
+static void fillMinimums(
+    std::mt19937_64& rng,
+    Schedule& schedule,
+    std::vector<Employee>& employees
+) {
+    for (auto &day : DAYS) {
+        for (auto &shift : SHIFTS) {
+            while (schedule[day][shift].size() < 2) {
+                std::vector<int> eligibleIdx;
+                for (int i = 0; i < (int)employees.size(); ++i) {
+                    if (canWorkMore(employees[i]) && isFree(employees[i], day)) {
+                        eligibleIdx.push_back(i);
+                    }
+                }
+                if (eligibleIdx.empty()) break;
 
-        ranked = emp.prefs.get(day, SHIFTS[:])
-        # 1) Try ranked preferences
-        for s in ranked:
-            if preferred_only_until_full:
-                # treat "full" as having met minimum requirement (2) during preference placement
-                if len(schedule[day][s]) >= 2:
-                    continue
-            # ensure no more than one shift/day already satisfied by is_employee_free
-            schedule[day][s].append(emp.name)
-            emp.assigned_by_day[day] = s
-            emp.days_worked += 1
-            return True
+                std::uniform_int_distribution<int> dist(0, (int)eligibleIdx.size() - 1);
+                int pick = eligibleIdx[dist(rng)];
+                schedule[day][shift].push_back(employees[pick].name);
+                employees[pick].assignedByDay[day] = shift;
+                employees[pick].days_worked++;
+            }
+        }
+    }
+}
 
-        # 2) If conflict (all ranked full), try any shift same day that isn't full (or any shift)
-        for s in SHIFTS:
-            if preferred_only_until_full and len(schedule[day][s]) >= 2:
-                continue
-            schedule[day][s].append(emp.name)
-            emp.assigned_by_day[day] = s
-            emp.days_worked += 1
-            return True
+static Schedule buildSchedule(std::vector<Employee>& employees, uint64_t seed = 42) {
+    std::mt19937_64 rng(seed);
 
-        # 3) Otherwise push to next day (loop continues)
-
-    return False
-
-
-def fill_minimums(
-    rng: random.Random,
-    schedule: Dict[str, Dict[str, List[str]]],
-    employees: List[Employee]
-) -> None:
-    """
-    Ensure >=2 employees per shift per day by randomly assigning eligible employees:
-      - not assigned that day
-      - days_worked < 5
-    """
-    for day in DAYS:
-        for shift in SHIFTS:
-            while len(schedule[day][shift]) < 2:
-                eligible = [
-                    e for e in employees
-                    if can_work_more(e) and is_employee_free(e, day)
-                ]
-                if not eligible:
-                    # Can't satisfy requirement if nobody eligible
-                    break
-                chosen = rng.choice(eligible)
-                schedule[day][shift].append(chosen.name)
-                chosen.assigned_by_day[day] = shift
-                chosen.days_worked += 1
-
-
-def build_schedule(employees: List[Employee], seed: int = 42) -> Dict[str, Dict[str, List[str]]]:
-    rng = random.Random(seed)
-    schedule: Dict[str, Dict[str, List[str]]] = {
-        d: {s: [] for s in SHIFTS} for d in DAYS
+    Schedule schedule;
+    for (auto &d : DAYS) {
+        for (auto &s : SHIFTS) {
+            schedule[d][s] = {};
+        }
     }
 
-    # Preference pass: try to place everyone respecting ranked preferences,
-    # while treating a shift as "full" once it hits 2 (so conflicts occur).
-    # This helps distribute and triggers conflict resolution logic.
-    for day_idx, day in enumerate(DAYS):
-        # shuffle to reduce bias each day
-        day_emps = employees[:]
-        rng.shuffle(day_emps)
-        for emp in day_emps:
-            if not can_work_more(emp):
-                continue
-            if not is_employee_free(emp, day):
-                continue
-            # Try assign today; if conflicts, it may push to next day
-            try_assign(schedule, emp, day_idx, preferred_only_until_full=True)
+    // Preference pass
+    for (int dayIdx = 0; dayIdx < (int)DAYS.size(); ++dayIdx) {
+        std::vector<int> order(employees.size());
+        for (int i = 0; i < (int)employees.size(); ++i) order[i] = i;
+        std::shuffle(order.begin(), order.end(), rng);
 
-    # Fill shortages to ensure >=2 per shift/day (random eligible employees)
-    fill_minimums(rng, schedule, employees)
+        const std::string& day = DAYS[dayIdx];
+        for (int idx : order) {
+            if (!canWorkMore(employees[idx])) continue;
+            if (!isFree(employees[idx], day)) continue;
+            tryAssign(schedule, employees[idx], dayIdx, true);
+        }
+    }
 
-    return schedule
+    // Ensure >= 2 per shift/day
+    fillMinimums(rng, schedule, employees);
 
+    return schedule;
+}
 
-def print_schedule(schedule: Dict[str, Dict[str, List[str]]]) -> None:
-    print("\nFINAL WEEK SCHEDULE\n" + "=" * 60)
-    for d in DAYS:
-        print(f"\n{d}:")
-        for s in SHIFTS:
-            names = schedule[d][s]
-            pretty_shift = SHIFT_NAME[s]
-            if names:
-                print(f"  {pretty_shift:<10}: {', '.join(names)}")
-            else:
-                print(f"  {pretty_shift:<10}: (none)")
+static void printSchedule(const Schedule& schedule) {
+    std::cout << "\nFINAL WEEK SCHEDULE\n"
+              << "============================================================\n";
+    for (auto &d : DAYS) {
+        std::cout << "\n" << d << ":\n";
+        for (auto &s : SHIFTS) {
+            std::cout << "  " << shiftName(s) << ": ";
+            const auto &names = schedule.at(d).at(s);
+            if (names.empty()) {
+                std::cout << "(none)\n";
+            } else {
+                for (size_t i = 0; i < names.size(); ++i) {
+                    std::cout << names[i] << (i + 1 < names.size() ? ", " : "");
+                }
+                std::cout << "\n";
+            }
+        }
+    }
+}
 
+static void printEmployeeSummary(const std::vector<Employee>& employees) {
+    std::cout << "\nEMPLOYEE SUMMARY\n"
+              << "============================================================\n";
+    for (auto &e : employees) {
+        std::cout << e.name << ": " << e.days_worked << " day(s) -> ";
+        bool first = true;
+        for (auto &d : DAYS) {
+            auto it = e.assignedByDay.find(d);
+            if (it != e.assignedByDay.end() && !it->second.empty()) {
+                if (!first) std::cout << ", ";
+                std::cout << d;
+                first = false;
+            }
+        }
+        std::cout << "\n";
+    }
+}
 
-def print_employee_summary(employees: List[Employee]) -> None:
-    print("\nEMPLOYEE SUMMARY\n" + "=" * 60)
-    for e in employees:
-        worked_days = [d for d in DAYS if e.assigned_by_day[d] is not None]
-        print(f"{e.name}: {e.days_worked} day(s) -> {worked_days}")
+int main() {
+    int n;
+    std::cout << "Number of employees: ";
+    std::cin >> n;
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 
+    std::vector<Employee> employees;
+    employees.reserve(n);
 
-def main():
-    employees = collect_input()
-    schedule = build_schedule(employees, seed=42)
-    print_schedule(schedule)
-    print_employee_summary(employees)
+    for (int i = 0; i < n; ++i) {
+        Employee e;
+        std::cout << "Employee " << (i + 1) << " name: ";
+        std::getline(std::cin, e.name);
 
+        std::cout << "Enter preferences for each day as ranked shifts (comma-separated). Example: M,E,A\n";
+        for (auto &d : DAYS) {
+            std::cout << "  " << d << ": ";
+            std::string line;
+            std::getline(std::cin, line);
+            e.prefs[d] = splitPrefs(line);
+            e.assignedByDay[d] = ""; // none
+        }
+        employees.push_back(e);
+    }
 
-if __name__ == "__main__":
-    main()
+    Schedule schedule = buildSchedule(employees, 42);
+    printSchedule(schedule);
+    printEmployeeSummary(employees);
+    return 0;
+}
